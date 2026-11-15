@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>远寒之地 Pro</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background:#08080a; color:#a8a8a8; font-family:"Consolas","Courier New","宋体",monospace;
+    font-size:14px; line-height:1.65; padding:16px; min-height:100vh; }
+  #app { max-width:860px; margin:0 auto; }
+  h1 { font-size:17px; font-weight:normal; letter-spacing:6px; color:#5a5a5a; margin-bottom:12px; }
+
+  #toolbar { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px; }
+  button { background:#121214; color:#8a8a8a; border:1px solid #26262a; padding:5px 11px;
+    font-family:inherit; font-size:12px; cursor:pointer; transition:.15s; }
+  button:hover:not(:disabled) { background:#1c1c20; color:#ccc; border-color:#3a3a40; }
+  button:disabled { opacity:.28; cursor:not-allowed; }
+  button.primary { border-color:#3a4a3a; color:#7a9a7a; }
+  #msg { font-size:11px; color:#5a8a5a; height:15px; margin-bottom:8px; }
+
+  #stats { display:flex; flex-wrap:wrap; gap:14px; padding:9px 11px;
+    background:#0c0c0e; border:1px solid #1a1a1e; margin-bottom:10px; font-size:12px; }
+  .s { color:#6a6a6a; } .s b { color:#b8b8b8; font-weight:normal; }
+
+  #bars { margin-bottom:10px; font-size:12px; }
+  .bar { display:flex; align-items:center; gap:8px; margin-bottom:5px; }
+  .bar > span { width:52px; color:#606060; }
+  .track { flex:1; height:5px; background:#141416; border:1px solid #222226; }
+  .fill { height:100%; transition:width .35s; }
+
+  #main { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  @media (max-width:700px) { #main { grid-template-columns:1fr; } }
+
+  .panel { background:#0a0a0c; border:1px solid #1a1a1e; padding:10px; }
+  .panel h2 { font-size:12px; font-weight:normal; color:#5a5a5a; letter-spacing:2px;
+    margin-bottom:8px; border-bottom:1px solid #1a1a1e; padding-bottom:5px; }
+  .row { display:flex; align-items:center; gap:8px; margin-bottom:5px; }
+  .row button { flex:1; text-align:left; }
+  .tip { font-size:11px; color:#4a4a4a; }
+
+  #log { height:230px; overflow-y:auto; padding:9px; background:#060608;
+    border:1px solid #16161a; scrollbar-width:thin; }
+  #log p { margin-bottom:5px; animation:fade .35s; }
+  @keyframes fade { from{opacity:0;transform:translateY(3px);} to{opacity:1;} }
+  .dim{color:#4a4a4a;} .warn{color:#a0653a;} .good{color:#5a8a5a;}
+  .bad{color:#a04040;} .rare{color:#8a7ab8;}
+  #jobs { font-size:12px; color:#667; margin-bottom:8px; padding:6px 8px;
+    background:#0e0e12; border-left:2px solid #2a2a3a; }
+</style>
+</head>
+<body>
+<div id="app">
+  <h1>远 寒 之 地 · P R O</h1>
+  <div id="toolbar">
+    <button onclick="saveGame()" class="primary">保存</button>
+    <button onclick="loadGame()">读档</button>
+    <button onclick="exportSave()">导出</button>
+    <button onclick="importSave()">导入</button>
+    <button onclick="resetGame()">重开</button>
+  </div>
+  <div id="msg"></div>
+  <div id="stats"></div>
+  <div id="bars"></div>
+  <div id="main">
+    <div class="panel"><h2>行 动</h2><div id="actions"></div></div>
+    <div class="panel"><h2>日 志</h2><div id="log"></div></div>
+  </div>
+</div>
+
+<script>
+const SAVE_KEY = "yuanhan_pro_v2";
+const AUTOSAVE_MS = 15000;
+
+// ================= 状态 =================
+function newState() {
+  return {
+    tick: 0, day: 1,
+    wood: 0, fur: 0, meat: 0, stone: 0, metal: 0, coal: 0, cloth: 0,
+    fire: 0, maxFire: 300, temp: 20,
+    firepit: false, hut: 0, trap: 0, cart: 0, furnace: false, tannery: false,
+    pop: 0, maxPop: 2,
+    jobs: { gather: 0, hunt: 0, wood: 0, craft: 0 },
+    explored: 0, weapon: 0, armor: 0,
+    tech: {},
+    log: []
+  };
+}
+let S = newState();
+
+// ================= 日志 =================
+function log(m, c) {
+  S.log.push({ m, c: c || "" });
+  if (S.log.length > 250) S.log.shift();
+  renderLog();
+}
+function renderLog() {
+  const el = document.getElementById("log");
+  el.innerHTML = S.log.map(l => `<p class="${l.c}">${l.m}</p>`).join("");
+  el.scrollTop = el.scrollHeight;
+}
+
+// ================= 渲染 =================
+function renderStats() {
+  const items = [
+    ["木材", S.wood], ["毛皮", S.fur], ["食物", S.meat],
+    ["石头", S.stone], ["金属", S.metal], ["煤炭", S.coal], ["布料", S.cloth]
+  ];
+  document.getElementById("stats").innerHTML =
+    items.map(([k, v]) => `<div class="s">${k} <b>${Math.floor(v)}</b></div>`).join("") +
+    `<div class="s">第 <b>${S.day}</b> 天</div>`;
+}
+
+function renderBars() {
+  const fp = Math.min(100, S.fire / S.maxFire * 100);
+  const tp = Math.max(0, Math.min(100, (S.temp + 20) / 60 * 100));
+  const pp = S.maxPop ? Math.min(100, S.pop / S.maxPop * 100) : 0;
+  document.getElementById("bars").innerHTML = `
+    <div class="bar"><span>火堆</span>
+      <div class="track"><div class="fill" style="width:${fp}%;background:#c8792a"></div></div>
+      <span style="width:44px;color:#555">${Math.floor(S.fire)}</span></div>
+    <div class="bar"><span>温度</span>
+      <div class="track"><div class="fill" style="width:${tp}%;background:${S.temp<0?'#4a6a9a':'#9a7a4a'}"></div></div>
+      <span style="width:44px;color:#555">${S.temp.toFixed(0)}°</span></div>
+    <div class="bar"><span>人口</span>
+      <div class="track"><div class="fill" style="width:${pp}%;background:#5a8a5a"></div></div>
+      <span style="width:44px;color:#555">${S.pop}/${S.maxPop}</span></div>`;
+}
+
+function can(cost) {
+  for (const k in cost) if ((S[k]||0) < cost[k]) return false;
+  return true;
+}
+function pay(cost) { for (const k in cost) S[k] -= cost[k]; }
+
+// ================= 行动 =================
+function renderActions() {
+  const out = [];
+  const R = b => out.push(`<div class="row">${b}</div>`);
+
+  if (!S.firepit) {
+    R(`<button onclick="buildFirepit()">搭建火堆</button><span class="tip">先得有火</span>`);
+  } else {
+    R(`<button onclick="addWood()" ${S.wood<1?"disabled":""}>添柴 (木x1)</button>
+       <button onclick="addCoal()" ${S.coal<1?"disabled":""}>添煤 (煤x1)</button>`);
+  }
+
+  if (S.firepit) {
+    R(`<button onclick="gatherWood()">砍柴</button>`);
+    R(`<button onclick="gatherStone()" ${!S.tech.stone?"disabled":""}>采石${!S.tech.stone?"（需制石术）":""}</button>`);
+  }
+
+  if (S.firepit && !S.tech.hunt) {
+    R(`<button onclick="unlockHunt()" ${S.wood<15?"disabled":""}>制作陷阱 (木x15)</button>`);
+  } else if (S.tech.hunt) {
+    R(`<button onclick="hunt()">打猎</button>`);
+  }
+
+  if (S.firepit) {
+    R(`<button onclick="buildHut()" ${S.wood<40?"disabled":""}>建小屋 (木x40)</button><span class="tip">已建 ${S.hut}</span>`);
+  }
+  if (S.hut > 0) {
+    R(`<button onclick="recruit()" ${S.wood<12||S.pop>=S.maxPop?"disabled":""}>招募工人 (木x12)</button><span class="tip">${S.pop}/${S.maxPop}</span>`);
+  }
+
+  // 岗位分配
+  if (S.pop > 0) {
+    const j = S.jobs;
+    const used = j.gather + j.hunt + j.wood + j.craft;
+    const free = S.pop - used;
+    out.push(`<div id="jobs">闲置 <b style="color:${free>0?'#8a8a5a':'#667'}">${free}</b> 人 ｜ 采集 ${j.gather} · 打猎 ${j.hunt} · 伐木 ${j.wood} · 制作 ${j.craft}</div>`);
+    R(`<button onclick="assign('gather')" ${free<=0?"disabled":""}>→ 采集</button>
+       <button onclick="assign('hunt')" ${free<=0?"disabled":""}>→ 打猎</button>
+       <button onclick="assign('wood')" ${free<=0?"disabled":""}>→ 伐木</button>
+       <button onclick="assign('craft')" ${free<=0?"disabled":""}>→ 制作</button>`);
+    if (used > 0) R(`<button onclick="unassign()">全部收回</button>`);
+    if (free > 0) out.push(`<div class="tip" style="margin-bottom:6px;color:#7a6a3a">⚠ 还有 ${free} 人闲置，不会产出任何资源</div>`);
+  }
+
+  if (S.firepit && !S.furnace) {
+    R(`<button onclick="buildFurnace()" ${S.wood<50||S.stone<20?"disabled":""}>建熔炉 (木x50 石x20)</button>`);
+  }
+  if (S.furnace) {
+    R(`<button onclick="smelt()" ${S.stone<5||S.coal<1?"disabled":""}>冶炼金属 (石x5 煤x1)</button>`);
+  }
+  if (S.firepit && !S.tannery) {
+    R(`<button onclick="buildTannery()" ${S.wood<30||S.fur<10?"disabled":""}>建制革坊 (木x30 皮x10)</button>`);
+  }
+  if (S.tannery) {
+    R(`<button onclick="makeCloth()" ${S.fur<3?"disabled":""}>制布 (皮x3)</button>`);
+  }
+
+  out.push(`<div class="row" style="margin-top:8px"><span class="tip" style="color:#5a5a7a">—— 研究 ——</span></div>`);
+  R(`<button onclick="research('stone')" ${S.tech.stone||S.wood<20?"disabled":""}>${S.tech.stone?"✓ ":""}制石术 (木x20)</button>`);
+  R(`<button onclick="research('carp')" ${S.tech.carp||S.wood<60?"disabled":""}>${S.tech.carp?"✓ ":""}木工 (木x60)</button>`);
+  R(`<button onclick="research('combat')" ${S.tech.combat||S.metal<10?"disabled":""}>${S.tech.combat?"✓ ":""}战斗训练 (金x10)</button>`);
+
+  if (S.tech.combat) {
+    R(`<button onclick="craftWeapon()" ${S.metal<5||S.wood<3?"disabled":""}>打造武器 (金x5 木x3) <span class="tip">Lv.${S.weapon}</span></button>`);
+    R(`<button onclick="craftArmor()" ${S.metal<4||S.fur<6?"disabled":""}>制造护甲 (金x4 皮x6) <span class="tip">Lv.${S.armor}</span></button>`);
+  }
+
+  if (S.pop >= 2) {
+    R(`<button onclick="explore()" ${S.meat<8?"disabled":""}>探索 (食物x8)</button><span class="tip">已探 ${S.explored}</span>`);
+  }
+
+  document.getElementById("actions").innerHTML = out.join("");
+}
+
+function render() { renderStats(); renderBars(); renderActions(); }
+
+// ================= 玩法 =================
+function buildFirepit() {
+  S.firepit = true; S.fire = 80;
+  log("火堆燃起来了。黑暗退后，雪地上有了你的影子。", "warn");
+  log("你终于可以喘口气了。", "dim");
+  render();
+}
+function addWood() { if (S.wood<1) return; S.wood--; S.fire = Math.min(S.maxFire, S.fire+30); render(); }
+function addCoal() { if (S.coal<1) return; S.coal--; S.fire = Math.min(S.maxFire, S.fire+80); render(); }
+
+function gatherWood() {
+  const n = 2 + Math.floor(Math.random()*3);
+  S.wood += n; log(`你拖着 ${n} 份木材回来，手冻得发僵。`, "good"); render();
+}
+function gatherStone() {
+  const n = 1 + Math.floor(Math.random()*3);
+  S.stone += n; log(`你凿下 ${n} 块石头。`, "good"); render();
+}
+function unlockHunt() {
+  if (S.wood<15) return;
+  S.wood -= 15; S.tech.hunt = true;
+  log("几个简易陷阱布在林边。", "warn"); render();
+}
+function hunt() {
+  if (Math.random() < 0.7) {
+    const f = 1+Math.floor(Math.random()*3), m = 2+Math.floor(Math.random()*4);
+    S.fur += f; S.meat += m;
+    log(`收获毛皮 ${f}、食物 ${m}。`, "good");
+  } else log("风雪里什么也没追到。", "dim");
+  render();
+}
+function buildHut() {
+  if (S.wood<40) return;
+  S.wood -= 40; S.hut++; S.maxPop++;
+  log(`新小屋落成，可容纳 ${S.maxPop} 人。`, "good"); render();
+}
+function recruit() {
+  if (S.wood<12 || S.pop>=S.maxPop) return;
+  S.wood -= 12; S.pop++;
+  log(`一个陌生人在火边坐下。现在 ${S.pop} 人。`, "good");
+  render();
+}
+
+// ===== 岗位分配（关键修复）=====
+function assign(job) {
+  const j = S.jobs;
+  const used = j.gather + j.hunt + j.wood + j.craft;
+  if (used >= S.pop) {
+    flash("没有闲置的人", "#a0653a");
+    return;
+  }
+  j[job] = (j[job] || 0) + 1;
+  const names = { gather:"采集", hunt:"打猎", wood:"伐木", craft:"制作" };
+  log(`一名工人被派去${names[job]}。`, "dim");
+  render();
+}
+function unassign() {
+  S.jobs = { gather:0, hunt:0, wood:0, craft:0 };
+  log("所有人回到火堆旁待命。", "dim");
+  render();
+}
+
+function buildFurnace() {
+  if (S.wood<50 || S.stone<20) return;
+  S.wood -= 50; S.stone -= 20; S.furnace = true;
+  log("熔炉砌好了。", "warn"); render();
+}
+function smelt() {
+  if (S.stone<5 || S.coal<1) return;
+  S.stone -= 5; S.coal--; S.metal += 2;
+  log("炉火淬出 2 份金属。", "good"); render();
+}
+function buildTannery() {
+  if (S.wood<30 || S.fur<10) return;
+  S.wood -= 30; S.fur -= 10; S.tannery = true;
+  log("制革坊建好。", "warn"); render();
+}
+function makeCloth() {
+  if (S.fur<3) return;
+  S.fur -= 3; S.cloth++;
+  log("一块粗布做好了。", "good"); render();
+}
+function research(key) {
+  const cost = { stone:{wood:20}, carp:{wood:60}, combat:{metal:10} }[key];
+  if (!cost || !can(cost) || S.tech[key]) return;
+  pay(cost); S.tech[key] = true;
+  log(`你摸索出${{stone:"制石术",carp:"木工",combat:"战斗训练"}[key]}。`, "rare");
+  render();
+}
+function craftWeapon() {
+  if (S.metal<5 || S.wood<3) return;
+  S.metal -= 5; S.wood -= 3; S.weapon++;
+  log(`武器强化到 Lv.${S.weapon}。`, "good"); render();
+}
+function craftArmor() {
+  if (S.metal<4 || S.fur<6) return;
+  S.metal -= 4; S.fur -= 6; S.armor++;
+  log(`护甲强化到 Lv.${S.armor}。`, "good"); render();
+}
+
+// ================= 探索 =================
+const ENCOUNTERS = [
+  { id:"ruins",   w:20, msg:"一片倒塌的木屋。你在灰烬里翻出些东西。" },
+  { id:"beast",   w:25, msg:"雪林深处，有东西在盯着你。" },
+  { id:"cache",   w:20, msg:"被雪掩埋的木箱。" },
+  { id:"vein",    w:15, msg:"岩壁上露出黑色的矿脉。" },
+  { id:"nothing", w:20, msg:"只有风和雪。什么也没有。" }
+];
+function pickEncounter() {
+  const total = ENCOUNTERS.reduce((a,e)=>a+e.w,0);
+  let r = Math.random()*total;
+  for (const e of ENCOUNTERS) { r -= e.w; if (r<=0) return e; }
+  return ENCOUNTERS[ENCOUNTERS.length-1];
+}
+function explore() {
+  if (S.meat<8) { log("食物不够，走不远。", "warn"); return; }
+  S.meat -= 8; S.explored++;
+  const enc = pickEncounter();
+  log(`你朝第 ${S.explored} 个方向走出去。`, "warn");
+  log(enc.msg, "dim");
+
+  switch (enc.id) {
+    case "ruins": { const w = 5+Math.floor(Math.random()*10); S.wood += w; log(`拾得木材 ${w}。`, "good"); break; }
+    case "cache": {
+      const m = 3+Math.floor(Math.random()*6); S.meat += m;
+      if (Math.random()<0.4) { S.coal += 3; log(`箱里有食物 ${m}、煤炭 3。`, "good"); }
+      else log(`箱里有食物 ${m}。`, "good");
+      break;
+    }
+    case "vein": { const s = 6+Math.floor(Math.random()*8); S.stone += s; log(`采到石头 ${s}。`, "good"); break; }
+    case "beast": {
+      const power = (S.weapon*2 + S.armor*2 + S.pop) - (4+Math.floor(Math.random()*8));
+      if (power > 0) {
+        const f = 3+Math.floor(Math.random()*5), m = 4+Math.floor(Math.random()*6);
+        S.fur += f; S.meat += m;
+        log(`你击退了它。毛皮 ${f}、食物 ${m}。`, "good");
+      } else {
+        const lost = Math.min(S.meat, 3); S.meat -= lost;
+        if (S.pop>0 && Math.random()<0.3) { S.pop--; log(`它扑了过来。你失去一名同伴，食物 ${lost}。`, "bad"); }
+        else log(`你狼狈逃回，丢了食物 ${lost}。`, "bad");
+      }
+      break;
+    }
+    default: log("空地一片，只能空手而归。", "dim");
+  }
+  render();
+}
+
+// ================= 主循环（修复）=================
+let acc = 0;
+setInterval(() => {
+  S.tick++;
+  acc++;
+
+  if (S.firepit) {
+    S.fire = Math.max(0, S.fire - 0.5);
+    if (S.fire > 0) S.temp += (25 - S.temp) * 0.02;
+    else S.temp -= 0.08;
+    if (S.temp < -10 && S.tick % 20 === 0) log("太冷了，有人在发抖。", "bad");
+  }
+
+  // 每 5 秒结算一次工人产出
+  if (acc >= 5) {
+    acc = 0;
+    const j = S.jobs;
+    let produced = [];
+
+    if (j.gather > 0) { S.meat += j.gather; produced.push(`食物+${j.gather}`); }
+    if (j.wood > 0)   { S.wood += j.wood;   produced.push(`木材+${j.wood}`); }
+    if (j.hunt > 0) {
+      S.meat += j.hunt;
+      let furGain = 0;
+      for (let i = 0; i < j.hunt; i++) if (Math.random() < 0.6) furGain++;
+      S.fur += furGain;
+      produced.push(`食物+${j.hunt}` + (furGain ? ` 毛皮+${furGain}` : ""));
+    }
+    if (j.craft > 0 && S.fur >= j.craft) {
+      S.fur -= j.craft; S.cloth += j.craft;
+      produced.push(`布料+${j.craft}`);
+    }
+
+    if (produced.length) log(`工人产出：${produced.join("，")}`, "dim");
+  }
+
+  if (S.tick % 20 === 0 && S.pop > 0) {
+    S.meat = Math.max(0, S.meat - Math.ceil(S.pop/2));
+    if (S.meat === 0) log("粮仓空了，有人饿着。", "warn");
+  }
+
+  if (S.tick % 60 === 0) { S.day++; log(`第 ${S.day} 天。`, "dim"); }
+
+  render();
+}, 1000);
+
+// ================= 存档（修复）=================
+function snapshot() {
+  return JSON.stringify({ v:2, data:{ ...S, log: S.log.slice(-80) } });
+}
+function sanitize(data) {
+  const fresh = newState();
+  const s = Object.assign({}, fresh, data || {});
+  s.jobs = Object.assign({ gather:0, hunt:0, wood:0, craft:0 }, s.jobs || {});
+  const numKeys = ["wood","fur","meat","stone","metal","coal","cloth","fire","maxFire",
+    "temp","pop","maxPop","hut","trap","cart","explored","weapon","armor","day","tick"];
+  numKeys.forEach(k => { if (typeof s[k] !== "number" || isNaN(s[k])) s[k] = fresh[k]; });
+  ["gather","hunt","wood","craft"].forEach(k => {
+    if (typeof s.jobs[k] !== "number" || isNaN(s.jobs[k])) s.jobs[k] = 0;
+  });
+  if (!s.tech || typeof s.tech !== "object") s.tech = {};
+  if (!Array.isArray(s.log)) s.log = [];
+  return s;
+}
+function saveGame(quiet) {
+  try {
+    localStorage.setItem(SAVE_KEY, snapshot());
+    if (!quiet) flash("已保存", "#5a8a5a");
+  } catch(e) { if (!quiet) flash("保存失败", "#a04040"); }
+}
+function loadGame(quiet) {
+  const raw = localStorage.getItem(SAVE_KEY);
+  if (!raw) { flash("没有存档", "#a0653a"); return; }
+  try {
+    const obj = JSON.parse(raw);
+    S = sanitize(obj.data);
+    render(); renderLog();
+    if (!quiet) flash("已读取", "#5a8a5a");
+  } catch { flash("存档损坏", "#a04040"); }
+}
+function exportSave() {
+  const blob = new Blob([snapshot()], { type:"application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `yuanhan_pro_${Date.now()}.json`;
+  a.click();
+}
+function importSave() {
+  const input = document.createElement("input");
+  input.type = "file"; input.accept = ".json";
+  input.onchange = e => {
+    const r = new FileReader();
+    r.onload = ev => {
+      try {
+        const obj = JSON.parse(ev.target.result);
+        S = sanitize(obj.data || obj);
+        render(); renderLog(); flash("已导入", "#5a8a5a");
+      } catch { flash("文件错误", "#a04040"); }
+    };
+    r.readAsText(e.target.files[0]);
+  };
+  input.click();
+}
+function resetGame() {
+  if (!confirm("确定重开？进度会丢失。")) return;
+  localStorage.removeItem(SAVE_KEY);
+  location.reload();
+}
+function flash(msg, color) {
+  const el = document.getElementById("msg");
+  el.textContent = msg; el.style.color = color;
+  setTimeout(() => { if (el.textContent === msg) el.textContent = ""; }, 2500);
+}
+
+setInterval(() => saveGame(true), AUTOSAVE_MS);
+window.addEventListener("beforeunload", () => saveGame(true));
+
+// ================= 启动 =================
+(function init() {
+  log("你醒在雪地里。很冷。不记得怎么来的。", "dim");
+  log("远处有片林子，但你首先需要一堆火。", "dim");
+  render();
+})();
+</script>
+</body>
+</html>
